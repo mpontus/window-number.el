@@ -23,38 +23,11 @@
 ;; Introduction
 ;; ============
 
-;; Window number mode allows you to select windows by numbers.  This
-;; edition now works with XEmacs as well as GNU Emacs.  The window
-;; numbers do not show up in the mode-line in XEmacs yet, instead a
-;; -?- is displayed.  Hopefully this can be fixed soon, but really
-;; depends on XEmacs developers.
-
-;; Installation
-;; ============
-
-;; Drop this file into your load path.  C-h v load-path RET or F1 v
-;; load-path RET will help.  Then place the following lines into your
-;; .emacs or ~/.xemacs/init.el and uncomment them.
-
-;; ----------------------------------------------------------------------------
-
-;; (autoload 'window-number-mode "window-number"
-;;   "A global minor mode that enables selection of windows according to
-;; numbers with the C-x C-j prefix.  Another mode,
-;; `window-number-meta-mode' enables the use of the M- prefix."
-;;   t)
-
-;; (autoload 'window-number-meta-mode "window-number"
-;;   "A global minor mode that enables use of the M- prefix to select
-;; windows, use `window-number-mode' to display the window numbers in
-;; the mode-line."
-;;   t)
-
-;; ----------------------------------------------------------------------------
-
-;; Then you can use M-x window-number-mode RET to turn the mode on, or
-;; place (window-number-mode 1) and (window-number-meta-mode 1) into
-;; your .emacs or ~/.xemacs/init.el.
+;; This is a fork of original window-number developed by Johann
+;; "Myrkraverk" Oskarsson <myrkraverk@users.sourceforge.net> in 2004.
+;; This version contains semantic function changes, defaults to
+;; controling windows with meta keys and contains various new commands
+;; such as `window-number-swap' and `window-number-shuffle'.
 
 ;; ----------------------------------------------------------------------------
 
@@ -80,82 +53,113 @@ minibuffer (even if not active) last."
              (not (eq walk-windows-current walk-windows-start))))
     (reverse (cons (car list) (cdr list)))))
 
-(defun window-number-select (number)
-  "Selects the nth window."
-  (interactive "P")
-  (if (integerp number)
-      (let ((window (nth (1- number) (window-number-list))))
-        (if (and window (or (not (window-minibuffer-p window))
-                            (minibuffer-window-active-p window)))
-            (select-window window)
-          (error "No such window.")))))
+(defun window-number-get-number (&optional window)
+  (catch 'return
+    (let ((curr (or window (selected-window)))
+          (list (window-number-list)))
+      (dolist (i (number-sequence 1 (length list)))
+        (when (eq curr (pop list))
+          (throw 'return i))))))
 
-(defun window-number ()
+(defun window-number-get-state (window)
+  (list (window-buffer window)
+        (window-hscroll window)
+        (window-point window)
+        (window-start window)))
+
+(defun window-number-set-state (window state)
+  (set-window-buffer window (pop state))
+  (set-window-hscroll window (pop state))
+  (set-window-point window (pop state))
+  (set-window-start window (pop state)))
+
+(defun window-number-rotate (&rest windows)
+  "Rotate the states between WINDOWS.
+
+\(nth 1 windows) assumes the state of (nth 0 windows)
+\(nth 2 windows) assumes the state of (nth 1 windows)
+and so forth."
+  (let ((tmp (window-number-get-state (car windows))))
+    (while (cdr windows)
+     (window-number-set-state (pop windows)
+      (window-number-get-state (car windows))))
+    (window-number-set-state (car windows) tmp)))
+
+(defun window-number-arg ()
+  "Returns the number from key sequence used to invoke this command."
+  (let* ((key (event-basic-type last-input-event)))
+    (while (not (and (<= ?1 key) (>= ?9 key)))
+      (setq key (read-char "Window Number (1-9): ")))
+    (- key ?0)))
+
+(defun window-number-arg-window ()
+  "Retruns the window corresponding to number from key sequence."
+  (nth (1- (window-number-arg)) (window-number-list)))
+
+;;;###autoload
+(defun window-number-select (window)
+  "Selects the nth window."
+  (interactive (list (window-number-arg-window)))
+  (select-window window))
+
+;;;###autoload
+(defun window-number-swap (window)
+  "Swap contents of selected window and WINDOW."
+  (interactive (list (window-number-arg-window)))
+  (window-number-rotate window (selected-window)))
+
+;;;###autoload
+(defun window-number-shuffle (window)
+  "Set WINDOW conectents to selected window ones and change
+selected window buffer to next one"
+  (interactive (list (window-number-arg-window)))
+  (let ((next-buffer
+         (save-window-excursion
+           (bury-buffer)
+           (current-buffer))))
+    (window-number-rotate window  (selected-window))
+    (switch-to-buffer next-buffer)))
+
+(defun window-number-get-number (&optional window)
   "Returns the the number of the current window."
   (length
-   (memq (selected-window)
+   (memq (or window (selected-window))
          (nreverse (window-number-list)))))
 
 (defun window-number-string ()
   "Returns the string containing the number of the current window"
   (propertize
-   (concat " -" (number-to-string (window-number)) "-")
-   'face
-   'window-number-face))
+   (format " -%d-" (window-number-get-number))
+   'face 'window-number-face))
 
-(defvar window-number-mode-map nil
-  "Keymap for the window number mode.")
+(defun window-number-define-keys (keymap beg end def)
+  "Defines key sequences BEG .. END as DEF."
+  (unless (equal (butlast (listify-key-sequence beg))
+		 (butlast (listify-key-sequence end)))
+    (error "Different prefix for key sequences %S and %S."
+	   (key-description beg) (key-description end)))
+  (let ((prefix (butlast (listify-key-sequence beg)))
+	(last-events (cons (last (listify-key-sequence beg))
+			   (last (listify-key-sequence end)))))
+    (mapcar (lambda (last-event)
+	      (define-key keymap (vconcat prefix (list last-event)) def))
+	    (number-sequence (caar last-events) (cadr last-events)))))
 
-(defvar window-number-meta-mode-map nil
-  "Keymap for the window number meta mode.")
-
-(defmacro window-number-define-keys (mode-map prefix)
-  `(progn 
-     ,@(loop for number from 1 to 10 collect
-             `(define-key ,mode-map 
-                (kbd ,(concat prefix (number-to-string 
-                                      (if (>= number 10) 0 number))))
-                (lambda nil (interactive)
-                  (window-number-select ,number))))))
-
-; define C-x C-j 1 to switch to win 1, etc (C-x C-j 0 = win 10)
-(unless window-number-mode-map
-  (setq window-number-mode-map (make-sparse-keymap))
-  ; space after C-j is important
-  (window-number-define-keys window-number-mode-map "C-x C-j "))
-
-; define M-1 to switch to win 1, etc (M-0 = win 10)
-(unless window-number-meta-mode-map
-  (setq window-number-meta-mode-map (make-sparse-keymap))
-  (window-number-define-keys window-number-meta-mode-map "M-"))
-
-(if (featurep 'xemacs)
-    (define-minor-mode window-number-mode
-      "A global minor mode that enables selection of windows
-according to numbers with the C-x C-j prefix.  Another mode,
-`window-number-meta-mode' enables the use of the M- prefix."
-      :global t
-      :init-value nil
-      :lighter " -?-")
-
-  (define-minor-mode window-number-mode
-    "A global minor mode that enables selection of windows
-according to numbers with the C-x C-j prefix.  Another mode,
-`window-number-meta-mode' enables the use of the M- prefix."
-    :global t
-    :init-value nil
-    :lighter (:eval (window-number-string))))
-
-(define-minor-mode window-number-meta-mode
-  "A global minor mode that enables use of the M- prefix to
-select windows, use `window-number-mode' to display the window
-numbers in the mode-line."
-  :global t
-  :init-value nil)
-
-;;(push (cons 'my-window-number-meta-mode my-window-number-mode-map)
-;;       minor-mode-map-alist)
-
+;;;###autoload
+(define-minor-mode window-number-mode
+  "Global minor mode that enables use of M- keys to control windows."
+  :keymap
+  (let ((keymap (make-sparse-keymap)))
+    (window-number-define-keys keymap
+      (kbd "M-1") (kbd "M-9") 'window-number-select)
+    (window-number-define-keys keymap
+      (kbd "C-x C-1") (kbd "C-x C-9") 'window-number-swap)
+    (window-number-define-keys keymap
+      (kbd "C-x M-1") (kbd "C-x M-9") 'window-number-shuffle)
+    keymap)
+  :init-value nil
+  :lighter (:eval (window-number-string))
+  :global t)
 
 (defface window-number-face
   '((((type tty) (class color))
